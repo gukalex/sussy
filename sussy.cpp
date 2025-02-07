@@ -28,8 +28,8 @@ struct arena {
 } glob;
 
 u8* push(arena* a, u64 size) { // todo: alignment
-    u8* out = glob.curr;
-    glob.curr += size;
+    u8* out = a->curr;
+    a->curr += size;
     // todo: assert if OOM
     return out;
 }
