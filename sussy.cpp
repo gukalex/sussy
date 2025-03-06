@@ -7,7 +7,7 @@ time clang sussy.cpp -std=c++17 -g -luser32.lib -Wno-deprecated-declarations -o 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <stdarg.h>
 
 // TYPE ALIASES START
 using u8 = unsigned char;
@@ -18,15 +18,22 @@ using i32 = int;
 using i64 = unsigned long long int;
 
 // COMMON STRUCTS AND FUNCTIONS START
+// defer lambda hack
+#define CONCAT(x, y) x##y
+#define CONCAT_LINE_PREPROC(x, y) CONCAT(x, y)
+#define CONCAT_LINE(x) CONCAT_LINE_PREPROC(x, __LINE__)
+template<typename F> struct _defer { F f; _defer(F f) : f(f) {}; ~_defer() { f();} };
+#define defer _defer CONCAT_LINE(_defer_) = [&]()
+
 struct buf {
     u8* data;
     u64 size;
 };
 // sized string macro, use as printf("as string %.*s", SS(my_buf))
-#define SS(b) (int)b.size, b.data
+#define SS(b) (int)(b).size, (b).data
 
 struct arena {
-    u8* data;
+    u8* data; // start
     u8* curr;
     u64 size;
 } glob;
@@ -37,17 +44,58 @@ u8* push(arena* a, u64 size) { // todo: alignment
     // todo: assert if OOM
     return out;
 }
+// todo: pop_to
+
+arena arena_new(u64 size) {
+    arena a = {};
+    a.size = size;
+    a.data = a.curr = (u8*)calloc(1, a.size);
+    return a;
+}
+
+u8* arena_reset(arena *a) { // resets all allocation and sets curr = data
+    a->curr = a->data;
+    return a->curr; //maybe not needed
+}
+
+void arena_delete(arena *a) {
+    if (a->data != nullptr)
+        free(a->data);
+    *a = {};
+}
+
+// available size
+#define ARENA_AVAIL(a) ((a).size - ((a).curr - (a).data))
 
 buf str(const char* cstr) { // buf view
     return {(u8*)cstr, strlen(cstr)};
 }
 
+// unused?
 buf strc(const char* cstr) { // creates a buf with a copy to glob
     u64 size = strlen(cstr);
     buf out = { push(&glob, size + 1), size };
     memcpy(glob.curr, cstr, size + 1); // keeping 0 term but not reflecting it in 'size'
     return {(u8*)glob.curr, size};
 }
+
+buf str(arena* a, const char* fmt, ...) {
+    buf out = {};
+
+    u64 avail = ARENA_AVAIL(*a);
+    va_list args;
+    va_start(args, fmt);
+    int pos = vsnprintf((char*)a->curr, avail - 1, fmt, args);
+    va_end(args);
+    
+    if (pos > 0) {
+        out = {push(a, pos + 1), (u64)pos };
+        out.data[out.size] = 0;
+    }
+    return out;
+}
+
+//todo: str as snprintf with temp/custom allocator
 
 bool eq(const char* str, const char* str2) {
     u32 size = strlen(str);
@@ -63,7 +111,7 @@ bool eq(buf str, buf str2) {
     return memcmp(str.data, str2.data, str.size) == 0;
 }
 
-buf read_file(buf input_file_name, int zero_padding_bytes = 1) {
+buf read_file(buf input_file_name, int zero_padding_bytes, arena* a) { // todo: allocator
     buf f = {};
 	FILE* file = fopen((const char*)input_file_name.data, "rb");
 	if (file != NULL) {
@@ -71,7 +119,7 @@ buf read_file(buf input_file_name, int zero_padding_bytes = 1) {
 		f.size = ftell(file);
 		fseek(file, 0, SEEK_SET);
 
-		f.data = push(&glob, f.size + zero_padding_bytes); // todo: assert temp size
+		f.data = push(a, f.size + zero_padding_bytes); // todo: assert temp size
 
 		u64 read_count = fread(f.data, f.size, 1, file);
         for (int i = 0; i < zero_padding_bytes; i++)
@@ -92,87 +140,145 @@ void write_file(const char* filename, buffer buf) {
 }
 */
 
+struct ivec2 {
+    i32 x, y;
+};
+
 // COMPILER START
 
-bool idt_start(char c) { // is start of identifier, cannot include numbers or other symbols except '_'
-    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_')
-        return true;
-    return false;
-}
-
-enum token {
-    NONE, // empty
-    NAME, // identifier name, function/variable
-    COMMENT,
-    SEPARATOR, // spaces, new lines
-    END_EXP, // ';'
+// values just for debugging, also some stuff could be condensed into larger groups like punctuation, separators, operations
+// todo: rename lex_token_t
+enum token_t {
+    UNKNOWN_ZERO = 0, // ?? idk zero initilization good ??
+    UNKNOWN = '?',    // empty
+    COMMA = ',', // could be a separator?
+    NAME = 'n', // identifier name, function/variable, keyword??
+    COMMENT = 'c', // comment '//' or '/* */'
+    SEPARATOR = 's', // spaces, tabs, '\r', new lines
+    END_EXP = ';', // ';'
+    DEFINITION = ':', // :: definition
+    OPERATION = 'O', // =, *, -, +, \, %, !, ~, &&, ||, &, |, ==, <, >, <=, >=, shifts << >> (not handling <<=, >>=)
+    SCOPE = '^', // {}, (), []
+    NUMBER = '1', // number constants
+    // todo: char, string, raw string, '? ternary', -> ' <-
 };
 
-struct token_mtd {
+struct token { // todo: rename lex_token
     buf src;
-    token t;
+    token_t type;
+    ivec2 location; // inline number(.x) and line number (.y)
+    i32 new_lines; // what for? 
+    // todo: more metadata?
 };
 
-token_mtd consume(char** addr_for_c, token t) {
-    char *c = *addr_for_c;
-    token_mtd mtd = { buf{(u8*)c, 0}, t };
-    switch (t) {
-        case COMMENT:
-        // c++
-        // mtd.src = {c, diff}
-        break;
-        case NAME:
-        //...
-        default: 
-        break;
-    }
-    return mtd;
-}
+#define NUM_1ST(c) ((c) >= '0' && (c) <= '9')
+#define NUM_2ND(c) (NUM_1ST(c) || (c) == '\'' || (c) == '_')
+// todo: emoji support lol, after inventing encoding lol
+// todo: maybe allow numbers as first char?
+// is start of identifier, cannot include numbers or other symbols except '_'
+#define IDT_1ST(c) (((c) >= 'A' && (c) <= 'Z') || ((c) >= 'a' && (c) <= 'z') || (c) == '_')
+// is characted belongs to identifier, can include numbers as non first character
+#define IDT_2ND(c) (IDT_1ST((c)) || NUM_1ST(c))
 
 void comp(buf input_file_name) {
-    // read the file
     // todo: assert utf8/ascii encoding or something
-    buf input = read_file(input_file_name, 10); /* we can read a few bytes past the end of the file and be fine */
+    buf input = read_file(input_file_name, 10, &glob); // we can read a few bytes past the end of the file and be fine
     printf("input:\n %.*s\n", SS(input));
     printf("input size: %d\n", (int)input.size);
-    
-    // an array of identifiers and their types
-    struct {
-        buf name;
-        buf type;
-    } idents[1000] = {}; // todo: proper sizing
-    int idents_count = 0;
 
-    // parse toplevel - get a list of identifiers
-    // todo: tokens
-    char *c = (i8*)input.data;
-    while ((u8*)c < input.data + input.size) {
-        int curr = (u64)c - (u64)input.data;
-        //printf("%d: %c (%d)\n", curr, (*c == '\n' ? '^' : *c), *c);
+    arena scratch = arena_new(64 * 1024); // a small thing, just for errors?
+    defer { arena_delete(&scratch); };
+
+    buf error = {}; // todo: add a proper error type enum ?
+    u8 *c = input.data;
+    i32 lines_total = 1; // need to keep a line number for error msg and other stuff
+    u8* line_start = c;
+    
+    while (c < input.data + input.size) {
+        token t = {{c, 0}, UNKNOWN};
+        i32 token_new_lines = 0;
+        #define NEWLINE() { c++; token_new_lines++; line_start = c; }
+
         switch (*c) {
-            case ' ': case '\n': case '\r': case '\t':
-            c++; break;
-            case '/':
+            case ',': t.type = COMMA; c++; break;
+            case '\n': t.type = SEPARATOR; NEWLINE(); break;
+            case ' ': case '\r': case '\t': t.type = SEPARATOR; c++; break;
+            case ';': t.type = END_EXP; c++; break;
+            case '{': case '}': case '(': case ')': case '[': case ']': t.type = SCOPE; c++; break;
+            case '*': case '+': case '-': case '%': case '!': case '~': {
+                t.type = OPERATION;
+                c++; 
+                if (*c == '=') c++;  // +=, -=, != except >=, <= which handled below
+            } break;
+            // =, ==, &, &&, |, ||, >, <, >=, <=, <<, >> handle with pairs, no <<=, >>= because I never use those
+            case '=': case '&': case '|': case '>': case '<':
+                t.type = OPERATION;
+                if (c[1] == *c || c[1] == '=') c += 2; // pairs ==, &&, << ... and <=, >=, &=, |=
+                else c++;
+                break;
+            case '/': { // comment or division operation
                 if (c[1] == '/') { // 1. can be a // comment
+                    t.type = COMMENT;
                     while(*c != '\n' && *c != 0) c++;
+                    NEWLINE(); // consume new line
                     break;
                 }
                 if (c[1] == '*') { // 2. can be a /* */ comment
-                    // todo: nested comments
+                    t.type = COMMENT;
+                    // todo: nested comments !!
                     c += 2; // revind to the char past '*'
-                    while (!(c[0] == '*' && c[1] == '/') && *c != 0) c++;
+                    while (!(c[0] == '*' && c[1] == '/') && *c != 0) {
+                        if (*c == '\n') { NEWLINE(); }
+                        else c++;
+                    }
                     c += 2; // skip past the last '/'
                     break;
                 }
-                c++; break; // 3. can be a division in an expression
-            default:
-                if (idt_start(*c)) { 
-                    //... = consume(&c, NAME);
+                t.type = OPERATION; // 3. can be a division in an expression
+                c++;
+                if (*c == '=') c++; // /=
+            } break;
+            case ':': {
+                if (c[1] == ':') {
+                    t.type = DEFINITION;
+                    c++;
+                } else {
+                    error = str("single ':', but '::' expected");
                 }
-                c++; break;
+                c++;
+            } break;
+            default: {
+                if (IDT_1ST(*c)) { // consume identifier name, '6i' works for now where 6 is ignored
+                    t.type = NAME;
+                    while(IDT_2ND(*c)) c++;
+                    break;
+                }
+                if (NUM_1ST(*c)) {
+                    t.type = NUMBER;
+                    while (NUM_2ND(*c)) c++;
+                    break;
+                }
+                error = str(&scratch, "unknown char [%c]", *c);
+                c++; 
+            } break;
         }
-        // process token for next stage -> add to token list
+
+        lines_total += token_new_lines;
+
+        t.src.size = c - t.src.data;
+        t.new_lines = token_new_lines;
+        t.location.x = t.src.data - line_start + 1; // +1 to start from 1 
+        t.location.y = lines_total;
+        // todo: process token for next stage -> add to token list
+
+        printf("[%c]%.*s", t.type, SS(t.src));
+        if (error.size != 0) {
+            printf("\nsyntax error at %d:%d: %.*s\n", t.location.y, t.location.x, SS(error));
+            // todo: set some error state to return/signal
+            break; // todo: some stuff can be ignored or that's a bad idea?
+        }
     }
+    printf("\nparsing %s\n", error.size == 0 ? "successful" : "failed");
 }
 
 int main(int argc, char** argv) {
@@ -184,8 +290,7 @@ int main(int argc, char** argv) {
     buf mode = str(argv[1]);
     buf input_file_name = str(argv[2]);
 
-    glob.size = 100 * 1024 * 1024;
-    glob.data = glob.curr = (u8*)calloc(1, glob.size);
+    glob = arena_new(100 * 1024 * 1024); // todo: tune
 
     if (eq("comp", mode)) {
         printf("compile/type check\n");
