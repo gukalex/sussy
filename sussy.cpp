@@ -2,6 +2,7 @@
 sus lang compiler
 compile windows (user lib probably not needed):
 time clang sussy.cpp -std=c++17 -g -luser32.lib -Wno-deprecated-declarations -o sussy.exe
+or build.sh
 */
 
 #include <stdio.h>
@@ -18,6 +19,11 @@ using i32 = int;
 using i64 = unsigned long long int;
 
 // COMMON STRUCTS AND FUNCTIONS START
+
+//printf(__VA_ARGS__);
+#define ASSERT(cond) do { if (!(cond)) { printf("Assert at %s:%d (%s) - %s\n",__FILE__, __LINE__, __func__, #cond); fflush(stdout); *(int*)(0) = 0; } } while (0)
+//#define ASSERT()
+
 // defer lambda hack
 #define CONCAT(x, y) x##y
 #define CONCAT_LINE_PREPROC(x, y) CONCAT(x, y)
@@ -36,13 +42,38 @@ struct arena {
     u8* data; // start
     u8* curr;
     u64 size;
+    // todo: make locked_by work in opposite way so if we pushed/popped it should be ok
+    u8* locked_by; // if inside push_start<->push_end, just to checks valid use
+    // u64 counter; // some stuff for stats and keeping track for valid use??
 } glob;
 
 u8* push(arena* a, u64 size) { // todo: alignment
+    ASSERT(a->locked_by == 0); // use push_next if arena in push mode
     u8* out = a->curr;
     a->curr += size;
-    // todo: assert if OOM
+    ASSERT(a->curr <= a->data + a->size); // todo: grow alloc
     return out;
+}
+u8* pop_to(arena* a, void* addr) {
+    a->curr = (u8*)addr;
+    return (u8*)addr;
+}
+
+// todo: not a fun how it looks yet
+u8* push_start(arena* a) {
+    ASSERT(a->locked_by == 0);
+    a->locked_by = a->curr;
+    return a->curr;
+}
+u8* push_next(arena* a, void* locked_by, i64 size) {
+    ASSERT(locked_by == a->locked_by);
+    a->curr += size;
+    ASSERT(a->curr <= a->data + a->size); // not growing here for sure
+    return a->curr;
+}
+void push_end(arena* a, void* locked_by) {
+    ASSERT(locked_by == a->locked_by);
+    a->locked_by = 0;
 }
 // todo: pop_to
 
@@ -50,6 +81,7 @@ arena arena_new(u64 size) {
     arena a = {};
     a.size = size;
     a.data = a.curr = (u8*)calloc(1, a.size);
+    a.locked_by = 0;
     return a;
 }
 
@@ -193,7 +225,10 @@ void comp(buf input_file_name) {
     u8 *c = input.data;
     i32 lines_total = 1; // need to keep a line number for error msg and other stuff
     u8* line_start = c;
-    
+
+    token* all_tokens = (token*)push_start(&glob);
+    u32 curr_t = 0;
+
     while (c < input.data + input.size) {
         token t = {{c, 0}, UNKNOWN};
         i32 token_new_lines = 0;
@@ -263,6 +298,9 @@ void comp(buf input_file_name) {
             } break;
         }
 
+        u32* stuff = (u32*)push(&glob, 10);
+        pop_to(&glob, stuff);
+
         lines_total += token_new_lines;
 
         t.src.size = c - t.src.data;
@@ -270,6 +308,10 @@ void comp(buf input_file_name) {
         t.location.x = t.src.data - line_start + 1; // +1 to start from 1 
         t.location.y = lines_total;
         // todo: process token for next stage -> add to token list
+        
+        all_tokens[curr_t] = t;
+        push_next(&glob, all_tokens, sizeof(token));
+        curr_t++;
 
         printf("[%c]%.*s", t.type, SS(t.src));
         if (error.size != 0) {
@@ -278,7 +320,10 @@ void comp(buf input_file_name) {
             break; // todo: some stuff can be ignored or that's a bad idea?
         }
     }
-    printf("\nparsing %s\n", error.size == 0 ? "successful" : "failed");
+    printf("\nStep 1. parsing %s\n", error.size == 0 ? "successful" : "failed");
+    push_end(&glob, all_tokens);
+
+    printf("token count %d\n", curr_t);
 }
 
 int main(int argc, char** argv) {
