@@ -2,30 +2,7 @@
 #arena(100MB)
 */
 
-main :: (input :: u32, output :: u32) {
-    multiplier :: u32 = 10
-    output = input * multiplier
-}
-
-///////////////////////////// (todo: make a different file)
-//
-// text comment, todo: add an example with all token types to test it
-
-/*
-#arena(100MB)
-*/
 main :: (input :: u32, output :: u32) = {
-    // stuff
-    multiplier :: u32 = 10; // another comment
+    multiplier :: u32 = 10;
     output = input * multiplier;
-    i :: u32;
-    b :: bool = input <= 2;
-    i += 2;
-    i << 10'02___'32345; // fucked up number
-    2nd;
-} // ; here or not? nahhh
-//: uncomment to test ':' syntax errors
-//push : u32
-//' - this not yet exists as well as "
-
-//
+}
