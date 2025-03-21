@@ -185,6 +185,9 @@ struct ivec2 {
 // COMPILER START
 
 // COMPILER LEX TOKEN START
+// todo: idea: don't push LEX_SEPARATOR to the token list, only when it's needed (in math expression precedence) - but then
+//    how do lexer know it's inside a math expression? (keep track of scope and see if it's between '=' and new line??
+//    but what about right hand side then?
 // values just for debugging, also some stuff could be condensed into larger groups like punctuation, separators, operations
 enum lex_token_t {
     LEX_UNKNOWN_ZERO = 0, // ?? idk zero initilization good ??
@@ -194,7 +197,7 @@ enum lex_token_t {
     LEX_NAME = 'n', // identifier name, function/variable, keyword??
     LEX_COMMENT = 'c', // comment '//' or '/* */'
     LEX_SEPARATOR = 's', // spaces, tabs, '\r', new lines
-    LEX_END_EXP = ';', // ';'
+    LEX_END_EXP = ';', // ';' - not mandatory
     LEX_DEFINITION = ':', // :: definition
     LEX_OPERATION = 'O', // =, *, -, +, \, %, !, ~, &&, ||, &, |, ==, <, >, <=, >=, shifts << >> (not handling <<=, >>=)
     LEX_SCOPE = '^', // {}, (), []
@@ -270,10 +273,11 @@ enum scope_t { // just for checking what kind of expressions are allowed?
 enum ast_t {
     //AST_PUSH_SCOPE, ??
     //AST_TOPLEVEL?
-    AST_VAR_INIT, // i::type; i::type=1; i :: struct_type; also covers function parameters
-    AST_VAR, // leaf reference to variable or constant
-    AST_OPERATION, // asignment, multiplication, add
-    AST_EXPRESSION,
+    //AST_COMPOUND/AST_SEQUENCE?
+    AST_VAR_INIT = 'i', // i::type; i::type=1; i :: struct_type; also covers function parameters
+    AST_VAR = 'v', // leaf reference to variable or constant
+    AST_OPERATION = 'o', // asignment, multiplication, add
+    AST_EXPRESSION = 'e',
 };
 
 enum operation_t {
@@ -291,6 +295,7 @@ struct AST {
     scope_t scope_type;
     // todo: desc union
     // AST_VAR AST_VAR_INIT
+    // todo: copy name here or start_t is enough?
     type_desc* var_type;
     bool is_constant; // number literal for now...
     bool is_function_param;
@@ -303,34 +308,10 @@ struct AST {
     u32 expressions_count;
 };
 
-// unused?
-type_desc parse_next_definition(arena* ast_pushing, AST* ast_start, u32* ast_count, lex_token** curr_t, buf* parse_error) {
-    // if a function:
-    //     expect { LEX_NAME, LEX_DEFINITION}
-    //     expect function param
-    //     expect assignemnt + scope enter -> push scope
-
-    lex_token *t = *curr_t; defer { *curr_t = t; };
-    type_desc desc = {};
-    #define SKIP_UNTIL(TYPE) do { while (t->type != TYPE && t->type != 0) t++; } while (0)
-
-    SKIP_UNTIL(LEX_NAME);
-    if (t->type != LEX_NAME) {
-        *parse_error = str("function name is");
-    }
-    if (t->type == LEX_NAME) {
-        type_desc main_f_desc = {};
-        main_f_desc.kind = type_desc::FUNCTION;
-    }
-
-
-    return desc;
-}
-
 void comp(buf input_file_name) {
     // todo: lexing + parsing could be done at the same time since they can work as a stream?
     bool debug_print_file = false;
-    bool do_lexing = true; bool debug_print_lexing = false;
+    bool do_lexing = true; bool debug_print_lexing = true;
     bool do_parsing = false; bool debug_print_parsing = true;
     bool do_bytecode = false;
 
@@ -342,7 +323,7 @@ void comp(buf input_file_name) {
     }
 
     arena scratch = arena_new(64 * 1024); // a small thing, just for errors?
-    defer { arena_delete(&scratch); };
+    defer { arena_delete(&scratch); }; // maybe we don't care?
 
     lex_token* all_tokens = 0;
     u32 all_tokens_size = 0;
@@ -387,6 +368,8 @@ void comp(buf input_file_name) {
                     if (c[1] == '/') { // 1. can be a // comment
                         t.type = LEX_COMMENT;
                         while(*c != '\n' && *c != 0) c++;
+
+                        ???? ////////// fix now! I don't want it and debug printf is showing wrong stufffff but info is fine omgg!!!
                         NEWLINE(); // consume new line
                         break;
                     }
@@ -448,7 +431,7 @@ void comp(buf input_file_name) {
             }
         }
 
-        // make a dummy zero-filled token for easy OOB check in the next step
+        // make a dummy zero-filled token for easy OOB check in the next step (todo: add multiple?)
         push_next(&glob, all_tokens, sizeof(lex_token));
         all_tokens[all_tokens_size] = {};
 
@@ -464,12 +447,7 @@ void comp(buf input_file_name) {
 
     // def list - functions and structs/enums
     // todo: do a proper grow without MAX_DEF
-    #define MAX_DEF 128
-    AST function_start[MAX_DEF] = {}; // only main for now
-    u32 function_start_count = 0; // main for now
-    type_desc program_def_types[MAX_DEF] = {}; // empty for now
-    u32 program_def_types_count = 0; // empty for now
-    // todo: fill program_def_types with buildin types?
+    AST *function_start = 0; // main func for now (always at start of all_ast??)
     
     // baking memory for ast list
     AST* all_ast = 0;
@@ -484,90 +462,146 @@ void comp(buf input_file_name) {
         scope_t scope_stack[MAX_SCOPE] = { SCOPE_FILE, SCOPE_NONE }; // init first scope with FILE
         int scope_i = 0;
         
-        #define PUSH_SCOPE(TYPE) do { ASSERT(scope_i >= 0 && scope_i < MAX_SCOPE - 1); scope_i++; scope_stack[scope_i] = TYPE; } while(0)
-        #define POP_SCOPE() do { ASSERT(scope_i > 0); scope_stack[scope_i] = SCOPE_NONE; scope_i--; } while (0)
+        #define PUSH_SCOPE(TYPE) do { printf("scope(%d) {\n", TYPE); ASSERT(scope_i >= 0 && scope_i < MAX_SCOPE - 1); scope_i++; scope_stack[scope_i] = TYPE; } while(0)
+        #define POP_SCOPE() do { printf("} scope(%d)\n", scope_stack[scope_i]); ASSERT(scope_i > 0); scope_stack[scope_i] = SCOPE_NONE; scope_i--; } while (0)
 
         all_ast = (AST*)push_start(&glob);
         defer { push_end(&glob, all_ast); };
         
-        lex_token *t = all_tokens;
+        #define PUSH_AST(A) do { all_ast[all_ast_count] = (A); push_next(&glob, all_ast, sizeof(AST)); all_ast_count++;\
+                                 if (debug_print_parsing) printf("A[%c]", (A).type); } while (0)
 
+        lex_token *t = all_tokens;
+    
+        // todo: make into a proper functions not a macro?
+        #define SKIP_UNTIL(TYPE) do { while (t->type != TYPE && t->type != 0) t++; } while (0)
+        // next without (ignoring separator usually)
+        #define ADVANCE_WO(WO_TYPE, token_p) do { (token_p)++; } while ((token_p)->type == WO_TYPE && (token_p)->type != 0)
+        // todo: comment isn't handled -- fix now
+        #define NEXT(token_p) do { (token_p)++; } while (((token_p)->type == LEX_SEPARATOR || (token_p)->type == LEX_COMMENT) && (token_p)->type != 0)
+        // todo: improve error to indicate this is for funcion declaration only...
+        #define DBG(TYPE) do { if (debug_print_parsing) printf("C[%c]", TYPE); } while (0)
+        #define ERR(...) do { parse_error = str(&scratch, __VA_ARGS__); goto parsing_footer; } while(0)
+        #define CMP(token_p, TYPE, EXACT_STR) ((token_p)->type == TYPE && eq(EXACT_STR, (token_p)->src))
+        #define CONSUME(TYPE) do { NEXT(t); if (t->type != TYPE) { ERR("expected [%c] but [%c] given", TYPE, t->type); } DBG(TYPE); } while (0)
+        #define CONSUME_E(TYPE, EXACT_STR) do { NEXT(t); if (!CMP(t, TYPE, EXACT_STR)) { ERR("expected [%c](\"%s\") but [%c](\"%.*s\") given", TYPE, EXACT_STR, t->type, SS(t->src)); } DBG(TYPE); } while (0)
+        #define PARSE_VAR_TYPE(TYPE_DESC_OUT) do { printf("(type \"%.*s\")", SS(t->src));\
+                                                   if(!eq(t->src, builtin_u32.name)) ERR("unrecognized type %.*s", SS(t->src)); /*todo: should be done at another stage*/\
+                                                   TYPE_DESC_OUT = &builtin_u32; } while (0)
+        // ';' or new line
+        #define CONSUME_EXPR_END() do { t++; if (t->type ) \
+            } while(0)
+
+        if (t->type != LEX_NAME) NEXT(t); // first skip all junk before the actual first identifier
         while (t < all_tokens + all_tokens_size) {
+            printf(".");
+
             // parse(SCOPE_FILE)
             //    parse(SCOPE_FUNC/STRUCT/ENUM)
             //        parse(SCOPE_EXPR)
             
             // SCOPE_FILE, parse next definition:
-            {
-                type_desc main_f_desc = {}; // todo: generalize into a function
-                // todo: make into a proper functions not a macro?
-                #define SKIP_UNTIL(TYPE) do { while (t->type != TYPE && t->type != 0) t++; } while (0)
-                // next without (ignoring separator usually)
-                #define ADVANCE_WO(WO_TYPE) do { t++; } while (t->type == WO_TYPE && t->type != 0)
-                #define NEXT() ADVANCE_WO(LEX_SEPARATOR)
-                // todo: improve error to indicate this is for funcion declaration only...
-                #define DBG(TYPE) do { if (debug_print_parsing) printf("C[%c]", TYPE); } while (0)
-                #define ERR(...) do { parse_error = str(&scratch, __VA_ARGS__); goto parsing_footer; } while(0)
-                #define CONSUME(TYPE) do { NEXT(); if (t->type != TYPE) { ERR("expected [%c] but [%c] given", TYPE, t->type); } DBG(TYPE); } while (0)
-                #define CONSUME_E(TYPE, EXACT_STR) do { NEXT(); if (t->type != TYPE || !eq(EXACT_STR, t->src)) {  ERR("expected [%c](\"%s\") but [%c](\"%.*s\") given", TYPE, EXACT_STR, t->type, SS(t->src)); } DBG(TYPE); } while (0)
 
-                SKIP_UNTIL(LEX_NAME);
-                if (t->type == LEX_NAME) {
-                    if (eq("main", t->src)) printf("main found\n");
-                    else printf("definition %.*s\n", SS(t->src));
-                    main_f_desc.name = t->src;
-                    // if func:
-                    // todo: else if struct/enum def
-
-                    // consume function expecting ":: (...) = {...}"
-                    CONSUME(LEX_DEFINITION);
-                    // change next part to 'parse_definition which should handle () and regular types and so on'
-                    CONSUME_E(LEX_SCOPE, "(");
-                    { // parse function parameters
-                        bool parameters_finished = false;
-                        do {
-                            CONSUME(LEX_NAME);
-                            // todo: save name to pass into ast parsing together with type desc
-                            printf("\nfunction parameter \"%.*s\"\n", SS(t->src));
-                            CONSUME(LEX_DEFINITION);
-                            CONSUME(LEX_NAME); // type
-                            printf("\nfunction parameter type \"%.*s\"\n", SS(t->src));
-                            // check type exists in the list... (maybe should be done at a later stage anyways)
-                            if(!eq(t->src, builtin_u32.name)) ERR("unrecognized type %.*s", SS(t->src));
-                            type_desc* found_type_desc = &builtin_u32;
-                            //NEXT();
-                            // if ',' while else ')'
-                            if ((t+1)->type != LEX_COMMA) parameters_finished = true;
-                            else NEXT();
-                        } while(!parameters_finished);
-                    }
-                    CONSUME_E(LEX_SCOPE, ")");
-                    CONSUME_E(LEX_OPERATION, "=");
-                    main_f_desc.kind = type_desc::FUNCTION;
-                    // consume function body into all_ast
-                    printf("\ndefinition finished\n");
-
-                    // WIP.... NOW
+            lex_token* t_at_name = 0;
+            bool read_next = true; // if end of the loop will skip do NEXT() or not (like if operation encountered something it wanted the next iteration to look into)
+            if (t->type == LEX_NAME) { // left hand identifier - name of function/variable when initializing/assigning to
+                t_at_name = t;
+                if (eq("main", t->src) && scope_stack[scope_i] == SCOPE_FILE) {
+                    printf("main found\n");
+                    function_start = all_ast + all_ast_count; // tmp?
                 }
+                else printf("name %.*s\n", SS(t->src));
 
+                NEXT(t);
+                if (t->type == LEX_DEFINITION) {
+                    printf("definition\n");
+                    // consume function expecting ":: (...) = {...}"
+
+                    // change next part to 'parse_definition which should handle () and regular types and so on'
+                    // todo: more robust types, after :: it could be just a function type identifier instead of inline definition
+                    NEXT(t);
+                    if (CMP(t, LEX_SCOPE, "(")) { // function definition
+                        PUSH_SCOPE(SCOPE_FUNC); // todo: decauple from definition? and put into another place?
+                        printf("parameter begin\n");
+                        i32 num_params = 0;
+                        do {
+                            NEXT(t);
+                            if (CMP(t, LEX_SCOPE, ")")) {
+                                printf("parameter end\n");
+                                break;
+                            } else if (num_params > 0 && t->type == LEX_COMMA) {
+                                NEXT(t); // consume comma
+                            }
+                            
+                            if (t->type != LEX_NAME) ERR("expected [%c] but [%c] given", LEX_NAME, t->type);
+                            // LEX_NAME consumed
+                            
+                            AST param = {AST_VAR_INIT};
+                            param.is_function_param = true;
+                            param.start_t = t;
+                            printf("(function parameter \"%.*s\")", SS(t->src));
+                            
+                            CONSUME(LEX_DEFINITION);
+                            CONSUME(LEX_NAME); /* type name */
+                            type_desc* found_type_desc = 0;
+                            PARSE_VAR_TYPE(found_type_desc);
+                            
+                            param.var_type = found_type_desc;
+                            param.scope_type = scope_stack[scope_i];
+                            param.end_t = t;
+                            PUSH_AST(param);
+                            num_params++;
+                        } while(true);
+                        printf("num params %d\n", num_params);
+                        // todo: definition could end here, and value assigned later, but for now we do '= { code }'
+                        CONSUME_E(LEX_OPERATION, "=");
+                        CONSUME_E(LEX_SCOPE, "{"); // push scope here instead??
+                        // consume function body into all_ast -> in the next iteration
+                    } else if (t->type == LEX_NAME) { // this should be a type with a regular variable definition
+                        printf("(doing stuff here)");
+                        type_desc* found_type_desc = 0;
+                        PARSE_VAR_TYPE(found_type_desc);
+                        AST var = {AST_VAR_INIT};
+                        var.is_function_param = false;
+                        var.start_t = t_at_name; // assert
+                        var.end_t = t; // even if init has '= ...' it's not included here, but in .right AST
+                        var.var_type = found_type_desc;
+                        var.scope_type = scope_stack[scope_i];
+                        var.right = 0;
+                        PUSH_AST(var);
+                       
+                        lex_token* peek = t;
+                        NEXT(peek);
+                        if (CMP(peek, LEX_OPERATION, "=")) {
+                            CONSUME_E(LEX_OPERATION, "="); // consume with 't'
+                            PUSH_SCOPE(SCOPE_EXPR);
+                            var.right = all_ast + all_ast_count; //... parse expression in next iteration, we need to check it's non zero tho (guarantee SCOPE_EXPR covers at least 1 AST)
+                        } else {
+                            //CONSUME_EXPR_END();
+                            printf("(expecting expr end)");
+                        }
+                    } else ERR("expected function or variable definition, but [%c] given", t->type);
+                    printf("\ndefinition finished\n");
+                } else if (CMP(t, LEX_OPERATION, "=")) {
+                    printf("(todo parse operation here)");
+                } else ERR("incorrect usage after using identifier name, [%c] given", t->type);
+            } else if (CMP(t, LEX_SCOPE, "}")) { 
+                POP_SCOPE(); // anything more? check scope? this
             }
-            //type_desc main_f_desc = parse_next_definition(&glob, all_ast, &all_ast_count, &t, &parse_error);
-            //if (main_f_desc.ast == 0) {
-            //    parse_error = str("no function definitions found");
-            //}
-            
+                
 parsing_footer:
             if (debug_print_parsing) {
                 printf("%c", t->type);
                 if (t->type == LEX_SEPARATOR && t->src.data[0] == '\n') printf("\n");
             }
-
             if (parse_error.size != 0) {
                 printf("\nparse error at %d:%d: %.*s\n", t->location.y, t->location.x, SS(parse_error));
                 break;
             }
 
-            t++;
+            if (read_next) 
+                NEXT(t);
+            //t++;
         }
     }
 
