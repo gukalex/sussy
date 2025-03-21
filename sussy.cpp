@@ -311,7 +311,7 @@ struct AST {
 void comp(buf input_file_name) {
     // todo: lexing + parsing could be done at the same time since they can work as a stream?
     bool debug_print_file = false;
-    bool do_lexing = true; bool debug_print_lexing = true;
+    bool do_lexing = true; bool debug_print_lexing = false;
     bool do_parsing = false; bool debug_print_parsing = true;
     bool do_bytecode = false;
 
@@ -351,6 +351,7 @@ void comp(buf input_file_name) {
                 case '.': t.type = LEX_DOT; c++; break;
                 // todo: combine multiple sequential separators into a single token with length
                 case '\n': t.type = LEX_SEPARATOR; NEWLINE(); break;
+                // todo: ignore \r completely?
                 case ' ': case '\r': case '\t': t.type = LEX_SEPARATOR; c++; break;
                 case '{': case '}': case '(': case ')': case '[': case ']': t.type = LEX_SCOPE; c++; break;
                 case '*': case '+': case '-': case '%': case '!': case '~': {
@@ -368,9 +369,7 @@ void comp(buf input_file_name) {
                     if (c[1] == '/') { // 1. can be a // comment
                         t.type = LEX_COMMENT;
                         while(*c != '\n' && *c != 0) c++;
-
-                        ???? ////////// fix now! I don't want it and debug printf is showing wrong stufffff but info is fine omgg!!!
-                        NEWLINE(); // consume new line
+                        // no NEWLINE(); here since we want it explicitly to check end of expression
                         break;
                     }
                     if (c[1] == '*') { // 2. can be a /* */ comment
@@ -422,8 +421,10 @@ void comp(buf input_file_name) {
             push_next(&glob, all_tokens, sizeof(lex_token));
             all_tokens_size++;
             
-            if (debug_print_lexing)
-                printf("[%c]%.*s", t.type, SS(t.src));
+            if (debug_print_lexing) {
+                if (t.src.data[0] == '\r') printf("[%c]\\r", t.type);
+                else printf("[%c]%.*s", t.type, SS(t.src));
+            }
             if (lex_error.size != 0) {
                 printf("syntax error at %d:%d: %.*s\n", t.location.y, t.location.x, SS(lex_error));
                 // todo: set some error state to return/signal?
