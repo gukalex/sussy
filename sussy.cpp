@@ -298,10 +298,10 @@ struct AST {
     // todo: copy name here or start_t is enough?
     type_desc* var_type;
     bool is_constant; // number literal for now...
-    bool is_function_param;
+    bool is_function_param; // only AST_VAR_INIT
     // AST_ASSIGN AST_OPERATION
     AST* left;
-    AST* right; // AST_VAR_INIT
+    AST* right; // +AST_VAR_INIT
     operation_t op_type;
     // AST_EXPRESSION
     AST* expressions;
@@ -463,8 +463,8 @@ void comp(buf input_file_name) {
         scope_t scope_stack[MAX_SCOPE] = { SCOPE_FILE, SCOPE_NONE }; // init first scope with FILE
         int scope_i = 0;
         
-        #define PUSH_SCOPE(TYPE) do { printf("scope(%d) {\n", TYPE); ASSERT(scope_i >= 0 && scope_i < MAX_SCOPE - 1); scope_i++; scope_stack[scope_i] = TYPE; } while(0)
-        #define POP_SCOPE() do { printf("} scope(%d)\n", scope_stack[scope_i]); ASSERT(scope_i > 0); scope_stack[scope_i] = SCOPE_NONE; scope_i--; } while (0)
+        #define PUSH_SCOPE(TYPE) do { printf("(begin scope (%d) #%d)", TYPE, scope_i + 1); ASSERT(scope_i >= 0 && scope_i < MAX_SCOPE - 1); scope_i++; scope_stack[scope_i] = TYPE; } while(0)
+        #define POP_SCOPE() do { printf("(end scope (%d) #%d)", scope_stack[scope_i], scope_i); ASSERT(scope_i > 0); scope_stack[scope_i] = SCOPE_NONE; scope_i--; } while (0)
 
         all_ast = (AST*)push_start(&glob);
         defer { push_end(&glob, all_ast); };
@@ -486,49 +486,80 @@ void comp(buf input_file_name) {
         #define CMP(token_p, TYPE, EXACT_STR) ((token_p)->type == TYPE && eq(EXACT_STR, (token_p)->src))
         #define CONSUME(TYPE) do { NEXT(t); if (t->type != TYPE) { ERR("expected [%c] but [%c] given", TYPE, t->type); } DBG(TYPE); } while (0)
         #define CONSUME_E(TYPE, EXACT_STR) do { NEXT(t); if (!CMP(t, TYPE, EXACT_STR)) { ERR("expected [%c](\"%s\") but [%c](\"%.*s\") given", TYPE, EXACT_STR, t->type, SS(t->src)); } DBG(TYPE); } while (0)
-        #define PARSE_VAR_TYPE(TYPE_DESC_OUT) do { printf("(type \"%.*s\")", SS(t->src));\
+        #define PARSE_VAR_TYPE(TYPE_DESC_OUT) do { if (debug_print_parsing) printf("(type \"%.*s\")", SS(t->src));\
                                                    if(!eq(t->src, builtin_u32.name)) ERR("unrecognized type %.*s", SS(t->src)); /*todo: should be done at another stage*/\
                                                    TYPE_DESC_OUT = &builtin_u32; } while (0)
-        // ';' or new line
-        #define CONSUME_EXPR_END() do { t++; if (t->type ) \
-            } while(0)
+        // WIP - look at var definition
+        #define CONSUME_EXPR_END(END) do { if (debug_print_parsing) printf("(expecting expr end)");\
+            do { /* (should contains only separators or comments) */\
+                t++;\
+                if (t->type == LEX_END_EXP) break;\
+                if (t->type == LEX_SEPARATOR && eq("\n", t->src)) break;\
+                if (t >= END || (t->type != LEX_COMMENT && t->type != LEX_SEPARATOR)) ERR("unexpected identifier [%c] when expression end expected", t->type);\
+            } while (t->type != 0); } while (0)
 
-        if (t->type != LEX_NAME) NEXT(t); // first skip all junk before the actual first identifier
-        while (t < all_tokens + all_tokens_size) {
+        lex_token *zt = all_tokens + all_tokens_size; // zero terminated token
+
+        if (t->type == LEX_SEPARATOR || t->type == LEX_COMMENT) NEXT(t);
+        while (t < zt) {
             printf(".");
-
-            // parse(SCOPE_FILE)
-            //    parse(SCOPE_FUNC/STRUCT/ENUM)
-            //        parse(SCOPE_EXPR)
+            // todo: operator "." support, how will it look like with parsing from below?
             
-            // SCOPE_FILE, parse next definition:
-
-            lex_token* t_at_name = 0;
-            bool read_next = true; // if end of the loop will skip do NEXT() or not (like if operation encountered something it wanted the next iteration to look into)
+            if (scope_stack[scope_i] == SCOPE_EXPR) { // we need to produce at least one AST elem ent
+                // todo: paranthesis support
+                // handle names or stuff
+                lex_token *peek = t;
+                NEXT(peek);
+                // expression could be a serries of operation
+                if (peek->type == LEX_OPERATION) {
+                    printf("(needs an expression parsing, ignored WIP)");
+                } else {
+                    AST var = {AST_VAR};
+                    var.start_t = var.end_t = t;
+                    var.scope_type = scope_stack[scope_i]; // SCOPE_EXPR
+                    var.var_type = &builtin_u32; // todo: deduce the type from the variable/constant
+                    if (t->type == LEX_NUMBER) {
+                        printf("(a number %.*s)", SS(t->src));
+                        var.is_constant = true;
+                        var.is_function_param = false;
+                        // push AST_VAR constant
+                        PUSH_AST(var);
+                    } else if (t->type == LEX_NAME) {
+                        // could be a variable name, or a function call
+                        AST var_const = {AST_VAR};
+                        var_const.is_constant = false;
+                        var_const.is_function_param = false;
+                        printf("(a variable name, else WIP)");
+                    } else ERR("unexpected identifier [%c] in expression", t->type); // todo: unary operators
+                    PUSH_AST(var);
+                    CONSUME_EXPR_END(peek);
+                }
+                POP_SCOPE();
+            }
+            
             if (t->type == LEX_NAME) { // left hand identifier - name of function/variable when initializing/assigning to
-                t_at_name = t;
+                lex_token* t_at_name = t;
                 if (eq("main", t->src) && scope_stack[scope_i] == SCOPE_FILE) {
-                    printf("main found\n");
+                    printf("(main found)");
                     function_start = all_ast + all_ast_count; // tmp?
                 }
-                else printf("name %.*s\n", SS(t->src));
+                else printf("(name %.*s)", SS(t->src));
 
                 NEXT(t);
                 if (t->type == LEX_DEFINITION) {
-                    printf("definition\n");
+                    printf("(definition)");
                     // consume function expecting ":: (...) = {...}"
 
                     // change next part to 'parse_definition which should handle () and regular types and so on'
                     // todo: more robust types, after :: it could be just a function type identifier instead of inline definition
                     NEXT(t);
                     if (CMP(t, LEX_SCOPE, "(")) { // function definition
-                        PUSH_SCOPE(SCOPE_FUNC); // todo: decauple from definition? and put into another place?
-                        printf("parameter begin\n");
+                        printf("(func init)");
                         i32 num_params = 0;
                         do {
                             NEXT(t);
                             if (CMP(t, LEX_SCOPE, ")")) {
-                                printf("parameter end\n");
+                                printf("(parameter end)");
                                 break;
                             } else if (num_params > 0 && t->type == LEX_COMMA) {
                                 NEXT(t); // consume comma
@@ -548,18 +579,19 @@ void comp(buf input_file_name) {
                             PARSE_VAR_TYPE(found_type_desc);
                             
                             param.var_type = found_type_desc;
-                            param.scope_type = scope_stack[scope_i];
+                            param.scope_type = SCOPE_FUNC; //scope_stack[scope_i];
                             param.end_t = t;
-                            PUSH_AST(param);
+                            PUSH_AST(param); // this assumes we declare the function right away...
                             num_params++;
                         } while(true);
-                        printf("num params %d\n", num_params);
+                        printf("(num params %d)", num_params);
                         // todo: definition could end here, and value assigned later, but for now we do '= { code }'
                         CONSUME_E(LEX_OPERATION, "=");
                         CONSUME_E(LEX_SCOPE, "{"); // push scope here instead??
+                        PUSH_SCOPE(SCOPE_FUNC); // todo: decauple from definition? and put into another place?
                         // consume function body into all_ast -> in the next iteration
                     } else if (t->type == LEX_NAME) { // this should be a type with a regular variable definition
-                        printf("(doing stuff here)");
+                        printf("(var init)");
                         type_desc* found_type_desc = 0;
                         PARSE_VAR_TYPE(found_type_desc);
                         AST var = {AST_VAR_INIT};
@@ -578,16 +610,18 @@ void comp(buf input_file_name) {
                             PUSH_SCOPE(SCOPE_EXPR);
                             var.right = all_ast + all_ast_count; //... parse expression in next iteration, we need to check it's non zero tho (guarantee SCOPE_EXPR covers at least 1 AST)
                         } else {
-                            //CONSUME_EXPR_END();
-                            printf("(expecting expr end)");
+                            CONSUME_EXPR_END(peek); // WIP doesn't do anything
                         }
                     } else ERR("expected function or variable definition, but [%c] given", t->type);
-                    printf("\ndefinition finished\n");
+                    printf("(definition finished)");
                 } else if (CMP(t, LEX_OPERATION, "=")) {
                     printf("(todo parse operation here)");
                 } else ERR("incorrect usage after using identifier name, [%c] given", t->type);
-            } else if (CMP(t, LEX_SCOPE, "}")) { 
-                POP_SCOPE(); // anything more? check scope? this
+            } else if (CMP(t, LEX_SCOPE, "}")) {
+                POP_SCOPE(); // anything more? check scope? currently no scoping except for function definition
+            } else {
+                printf("(ignored)");
+                // do we dissalow random tokens, needs to be a valid expression?
             }
                 
 parsing_footer:
@@ -600,8 +634,7 @@ parsing_footer:
                 break;
             }
 
-            if (read_next) 
-                NEXT(t);
+            NEXT(t);
             //t++;
         }
     }
