@@ -3,6 +3,7 @@
 */
 
 main :: (input :: u32, output :: u32) = {
-    multiplier :: u32 = 10;
-    output = input * multiplier;
+    multiplier :: u32 = 10 // dd
+    multiplier_2 :: u32 = multiplier * 2
+    output = input * multiplier
 }
