@@ -299,7 +299,7 @@ struct AST {
     type_desc* var_type;
     bool is_constant; // number literal for now...
     bool is_function_param; // only AST_VAR_INIT
-    // AST_ASSIGN AST_OPERATION
+    // AST_OPERATION
     AST* left;
     AST* right; // +AST_VAR_INIT
     operation_t op_type;
@@ -498,6 +498,26 @@ void comp(buf input_file_name) {
                 if (t >= END || (t->type != LEX_COMMENT && t->type != LEX_SEPARATOR)) ERR("unexpected identifier [%c] when expression end expected", t->type);\
             } while (t->type != 0); } while (0)
 
+        // todo: clean up var usage for number constant/literals, or it's gonna be messy
+        #define CONSUMED_VAR_OR_NUMBER() do {\
+                AST var = {AST_VAR};\
+                var.start_t = var.end_t = t;\
+                var.scope_type = scope_stack[scope_i]; /* SCOPE_EXPR */\
+                var.var_type = &builtin_u32; /* todo: deduce the type from the variable/constant */\
+                if (t->type == LEX_NUMBER) {\
+                    printf("(a number %.*s)", SS(t->src));\
+                    var.is_constant = true;\
+                    var.is_function_param = false;\
+                    /* push AST_VAR constant */\
+                } else if (t->type == LEX_NAME) {\
+                    /* could be a variable name, or a function call */\
+                    var.is_constant = false;\
+                    var.is_function_param = false;\
+                    printf("(a variable name '%.*s')", SS(t->src)); /* todo: function calls here and stuff */\
+                } else ERR("unexpected identifier [%c] in expression", t->type); /* todo: unary operators*/\
+                PUSH_AST(var);\
+            } while (0)
+
         lex_token *zt = all_tokens + all_tokens_size; // zero terminated token
 
         if (t->type == LEX_SEPARATOR || t->type == LEX_COMMENT) NEXT(t);
@@ -510,30 +530,32 @@ void comp(buf input_file_name) {
                 // handle names or stuff
                 lex_token *peek = t;
                 NEXT(peek);
-                // expression could be a serries of operation
-                if (peek->type == LEX_OPERATION) {
-                    printf("(needs an expression parsing, ignored WIP)");
-                } else {
-                    AST var = {AST_VAR};
-                    var.start_t = var.end_t = t;
-                    var.scope_type = scope_stack[scope_i]; // SCOPE_EXPR
-                    var.var_type = &builtin_u32; // todo: deduce the type from the variable/constant
-                    if (t->type == LEX_NUMBER) {
-                        printf("(a number %.*s)", SS(t->src));
-                        var.is_constant = true;
-                        var.is_function_param = false;
-                        // push AST_VAR constant
-                        PUSH_AST(var);
-                    } else if (t->type == LEX_NAME) {
-                        // could be a variable name, or a function call
-                        AST var_const = {AST_VAR};
-                        var_const.is_constant = false;
-                        var_const.is_function_param = false;
-                        printf("(a variable name, else WIP)");
-                    } else ERR("unexpected identifier [%c] in expression", t->type); // todo: unary operators
-                    PUSH_AST(var);
-                    CONSUME_EXPR_END(peek);
+
+                if (peek->type == LEX_OPERATION) { // expression could be a serries of operation
+                    printf("(operation parsing, only 2 operands WIP)");
+                    // if count_operations == 1:
+                    AST one_operation = {AST_OPERATION};
+                    one_operation.start_t = t;
+                    one_operation.scope_type = scope_stack[scope_i]; /* SCOPE_EXPR */
+                    // consume operation
+                    one_operation.left = all_ast + all_ast_count; // consume left operand
+                    CONSUMED_VAR_OR_NUMBER();
+
+                    CONSUME_E(LEX_OPERATION, "*"); //temp, todo: parse operation type here or later?
+                    one_operation.op_type = OP_MUL;
+                    NEXT(t);
+
+                    one_operation.right = all_ast + all_ast_count; // consume right operand
+                    CONSUMED_VAR_OR_NUMBER();
+
+                    one_operation.end_t = t; // in other places we don't include end_t for var_init assuming .right will cover it, should this do the same?
+                    PUSH_AST(one_operation);
+                    // if count_operations > 1 - wrap inside AST_EXPRESSION with expression count...
+                    peek = t; NEXT(peek); // temp for CONSUME_EXPR_END, todo: inside do{}while...
+                } else { // or a single variable/constant/literal
+                    CONSUMED_VAR_OR_NUMBER();
                 }
+                CONSUME_EXPR_END(peek);
                 POP_SCOPE();
             }
             
@@ -595,14 +617,12 @@ void comp(buf input_file_name) {
                         type_desc* found_type_desc = 0;
                         PARSE_VAR_TYPE(found_type_desc);
                         AST var = {AST_VAR_INIT};
-                        var.is_function_param = false;
                         var.start_t = t_at_name; // assert
-                        var.end_t = t; // even if init has '= ...' it's not included here, but in .right AST
                         var.var_type = found_type_desc;
                         var.scope_type = scope_stack[scope_i];
+                        var.is_function_param = false;
                         var.right = 0;
-                        PUSH_AST(var);
-                       
+                        
                         lex_token* peek = t;
                         NEXT(peek);
                         if (CMP(peek, LEX_OPERATION, "=")) {
@@ -612,10 +632,30 @@ void comp(buf input_file_name) {
                         } else {
                             CONSUME_EXPR_END(peek); // WIP doesn't do anything
                         }
+                        var.end_t = t; // even if init has '= ...' it's not included here, but in .right AST
+                        PUSH_AST(var);
                     } else ERR("expected function or variable definition, but [%c] given", t->type);
                     printf("(definition finished)");
                 } else if (CMP(t, LEX_OPERATION, "=")) {
-                    printf("(todo parse operation here)");
+                    printf("(assign operation)");
+                    AST op_assign = { AST_OPERATION };
+                    op_assign.start_t = t_at_name;
+                    op_assign.end_t = t;
+
+                    op_assign.left = all_ast + all_ast_count; // filled below
+                    AST var_left_hand_side = { AST_VAR };
+                    var_left_hand_side.start_t = var_left_hand_side.end_t = t_at_name;
+                    var_left_hand_side.scope_type = scope_stack[scope_i];
+                    var_left_hand_side.var_type = &builtin_u32; /* todo: deduce the type from the variable/constant */
+                    var_left_hand_side.is_constant = false;
+                    var_left_hand_side.is_function_param = false;
+                    PUSH_AST(var_left_hand_side);
+
+                    op_assign.op_type = OP_ASSIGN;
+                    op_assign.right = all_ast + all_ast_count; // .. prase expr in next iteration
+                    PUSH_SCOPE(SCOPE_EXPR);
+                    
+                    PUSH_AST(op_assign);
                 } else ERR("incorrect usage after using identifier name, [%c] given", t->type);
             } else if (CMP(t, LEX_SCOPE, "}")) {
                 POP_SCOPE(); // anything more? check scope? currently no scoping except for function definition
