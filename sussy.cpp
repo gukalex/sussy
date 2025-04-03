@@ -9,8 +9,9 @@ or build.sh
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <stdint.h>
 
-// TYPE ALIASES START
+/// TYPE ALIASES START
 using u8 = unsigned char;
 using i8 = char;
 using u32 = unsigned int;
@@ -20,9 +21,8 @@ using i64 = unsigned long long int;
 using f32 = float;
 using f64 = double;
 
-// COMMON STRUCTS AND FUNCTIONS START
+/// COMMON STRUCTS AND FUNCTIONS START
 
-//printf(__VA_ARGS__);
 #define ASSERT(cond) do { if (!(cond)) { printf("Assert at %s:%d (%s) - %s\n",__FILE__, __LINE__, __func__, #cond); fflush(stdout); /* *(int*)(0) = 0;*/ __builtin_trap(); } } while (0)
 //#define ASSERT()
 
@@ -133,8 +133,6 @@ buf str(arena* a, const char* fmt, ...) {
     return out;
 }
 
-//todo: str as snprintf with temp/custom allocator
-
 bool eq(const char* str, const char* str2) {
     u32 size = strlen(str);
     if (size != strlen(str2)) return false;
@@ -182,7 +180,7 @@ struct ivec2 {
     i32 x, y;
 };
 
-// COMPILER START
+/// COMPILER START
 
 // COMPILER LEX TOKEN START
 // todo: idea: don't push LEX_SEPARATOR to the token list, only when it's needed (in math expression precedence) - but then
@@ -207,7 +205,7 @@ enum lex_token_t {
 
 struct lex_token {
     buf src;
-    lex_token_t type;
+    lex_token_t type; // todo: move to be a first member to init with lex_token_t ...
     ivec2 location; // inline number(.x) and line number (.y)
     i32 new_lines; // what for? 
     // todo: more metadata?
@@ -222,7 +220,7 @@ struct lex_token {
 // is characted belongs to identifier, can include numbers as non first character
 #define IDT_2ND(c) (IDT_1ST((c)) || NUM_1ST(c))
 
-// COMPILER PARSING START
+/// COMPILER PARSING START
 
 struct type_desc {
     enum kind_t {
@@ -265,19 +263,18 @@ enum scope_t { // just for checking what kind of expressions are allowed?
     SCOPE_NONE, // todo: leave file = 0?
     SCOPE_FILE,
     SCOPE_FUNC,
-    SCOPE_EXPR, // if, for, while, right hand side of =
-    //SCOPE_STRUCT,
-    //SCOPE_ENUM,
-    //SCOPE_INITIALIZATION,
+    SCOPE_EXPR, // if, for, while, right hand side of = ...
 };
 enum ast_t {
     //AST_PUSH_SCOPE, ??
     //AST_TOPLEVEL?
     //AST_COMPOUND/AST_SEQUENCE?
+    AST_NONE, // todp: remove?
     AST_VAR_INIT = 'i', // i::type; i::type=1; i :: struct_type; also covers function parameters
+    // todo: remove AST_VAR, that should just be a reference to another data structure
     AST_VAR = 'v', // leaf reference to variable or constant
     AST_OPERATION = 'o', // asignment, multiplication, add
-    AST_EXPRESSION = 'e',
+    AST_EXPRESSION = 'e', // unused for now
 };
 
 enum operation_t {
@@ -313,7 +310,7 @@ void comp(buf input_file_name) {
     bool debug_print_file = false;
     bool do_lexing = true; bool debug_print_lexing = false;
     bool do_parsing = false; bool debug_print_parsing = true;
-    bool do_bytecode = false;
+    bool do_bytecode = false; bool debug_print_bytecode = true;
 
     // todo: assert utf8/ascii encoding or something
     buf input = read_file(input_file_name, 10, &glob); // we can read a few bytes past the end of the file and be fine
@@ -458,7 +455,7 @@ void comp(buf input_file_name) {
 
     //// step 2. convert lex tokens into AST
     if (do_parsing) {
-        // todo: just use arena and grow, need arena pull tho first
+        // todo: just use arena and grow, need arena pool tho first
         #define MAX_SCOPE 128
         scope_t scope_stack[MAX_SCOPE] = { SCOPE_FILE, SCOPE_NONE }; // init first scope with FILE
         int scope_i = 0;
@@ -677,13 +674,111 @@ parsing_footer:
             NEXT(t);
             //t++;
         }
+        // push dummy 0 ast at the end for convinience
+        all_ast[all_ast_count] = {AST_NONE}; push_next(&glob, all_ast, sizeof(AST));
+
+        printf("\nstep 2. parsing %s\n", parse_error.size == 0 ? "successful" : "failed");
     }
 
-    // todo: typecheck? when? (should be step 3?)
- 
+    if (parse_error.size == 0) {
+        do_bytecode = true;
+    }
+    printf("all ast size %d\n", all_ast_count);
+    // todo: typecheck? when? (should be step 3?) 
     // todo: optimization steps/passes?
 
-    // step 3. AST to bytecode
+    enum bk_t : u8 {
+        BK_NOP,
+        BK_PUSH, // it's just push stack?
+            // bk_push_flag_t
+        // BK_POP // pop stack
+        BK_COPY,
+        // BK_COPY_IMM??
+        BK_MUL,
+        //BK_DBG_INFO,
+    };
+    enum bk_push_flag_t : u8 {
+        BK_PUSH_FLAG_UNINIT,
+        BK_PUSH_FLAG_ZERO,
+    };
+
+    /* WIP thoughts: should we introduce registers? since if we will operate on addr only, we would have no control over
+       stackable addresses and such? or do we go all in with no recursion and allocate addresses for everything statically?
+    */
+    struct bk {
+        bk_t type;
+        // ...padding, some debug info - like pointer to embeded src stuff... 
+        // ... or maybe do BK_DBG which will contain more stuff, like src range and can be applied sparcefully...
+        // or due to padding I can leave some generic flag1, mode1 or something tha can be used for every/some operations?
+        union {
+            struct {
+                u32 size; // 4GB max...
+                bk_push_flag_t mem_flag;
+            } PUSH;
+            struct {
+                // using addr here is probably not the way since most of the time we will have no idea what the addr of the local var on compile time (unless static everything)
+                u32 dst_addr; // 4GB va...
+                u32 src_addr;
+                u32 size;
+            } COPY;
+            struct {
+                u32 op1_addr;
+                u32 op2_addr;
+                u32 res_addr;
+            } MUL; // todo: maybe specify operation as a enum type in BK_OP or something?
+        };
+    };
+
+    printf("single bk size %d\n", (int)sizeof(bk));
+    struct susc_bk_header {
+        u32 version = 1;
+        char info[64] = "wip sus bk";
+        // note: bk and data should be in continuous block... (or it will be annoying for stuff in operations specifying addr separately for 2 of those...
+        u32 bk_offset;
+        u32 bk_size;
+        u32 data_offset;
+        u32 data_size;
+        //---
+        u32 debug_src_offset;
+        u32 debug_src_size;
+    };
+
+    //// step 3. AST to bytecode
+    if (do_bytecode) {
+        for (int i = 0; i < all_ast_count; i++) {
+            int src_size = all_ast[i].end_t->src.data + all_ast[i].end_t->src.size - all_ast[i].start_t->src.data;
+            u8* src = all_ast[i].start_t->src.data;
+            printf("[%c](%.*s)\n", all_ast[i].type, src_size, src);
+        }
+
+        AST* za = all_ast + all_ast_count;
+        AST* a = all_ast;
+        while (a < za) {
+            if (debug_print_bytecode) printf(".");
+
+            switch (a->type) {
+                case AST_NONE: ASSERT(0 && "uninitialized AST"); break;
+                case AST_VAR_INIT: {
+                    // BK_PUSH zeroed
+                    // need to keep track var-to-addr/var-to-offset?, and it cannot be constant since this is stackable or something
+                } break;
+                case AST_VAR: {
+                    // if constant - append to data section
+                    // need to keep track which AST_VAR points to the data addr... need an array?
+                    // if not constant, we don't care and propagate the addr?...
+                } break;
+                case AST_OPERATION: {
+                    // if MUL
+                    // need to BK_PUSH for the result - unless we can figure where to write immidiately,
+                    // like chaining with assignment operation we can use lhs as a temp/result addr even for multiple opearions in a row
+                } break;
+                case AST_EXPRESSION: break; // unused, WIP
+                default: ASSERT(0 && "you forgor");
+            }
+
+            a++;
+        }
+    }
 }
 
 // todo: bytecode runner (susc bk)
