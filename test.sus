@@ -1,9 +1,9 @@
 /*
-#arena(100MB)
+#arena(100MB), fixed_start = 1TB
 */
 
 main :: (input :: u32, output :: u32) = {
     multiplier :: u32 = 10 // dd
-    multiplier_2 :: u32 = multiplier * 2
+    //multiplier_2 :: u32 = multiplier * 2
     output = input * multiplier
 }
