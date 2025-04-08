@@ -5,6 +5,7 @@ time clang sussy.cpp -std=c++17 -g -luser32.lib -Wno-deprecated-declarations -o 
 or build.sh
 */
 
+#include <cstdint>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,12 +13,13 @@ or build.sh
 #include <stdint.h>
 
 /// TYPE ALIASES START
-using u8 = unsigned char;
 using i8 = char;
-using u32 = unsigned int;
-using u64 = unsigned long long int;
-using i32 = int;
-using i64 = unsigned long long int;
+using u8 = uint8_t;
+using u16 = uint16_t;
+using u32 = uint32_t;
+using u64 = uint64_t;
+using i32 = int32_t;
+using i64 = int64_t;
 using f32 = float;
 using f64 = double;
 
@@ -125,7 +127,7 @@ buf str(arena* a, const char* fmt, ...) {
     va_start(args, fmt);
     int pos = vsnprintf((char*)a->curr, avail - 1, fmt, args);
     va_end(args);
-    
+
     if (pos > 0) {
         out = {push(a, pos + 1), (u64)pos };
         out.data[out.size] = 0;
@@ -207,7 +209,7 @@ struct lex_token {
     buf src;
     lex_token_t type; // todo: move to be a first member to init with lex_token_t ...
     ivec2 location; // inline number(.x) and line number (.y)
-    i32 new_lines; // what for? 
+    i32 new_lines; // what for?
     // todo: more metadata?
 };
 
@@ -325,7 +327,7 @@ void comp(buf input_file_name) {
     lex_token* all_tokens = 0;
     u32 all_tokens_size = 0;
     buf lex_error = {}; // todo: add a proper error type enum ?
-    
+
     //// step 1. lexing - convert text to a lex token list
     if (do_lexing) {
         all_tokens = (lex_token*)push_start(&glob);
@@ -337,11 +339,11 @@ void comp(buf input_file_name) {
 
         while (c < input.data + input.size) {
             lex_token t = {{c, 0}, LEX_UNKNOWN};
-            t.location.x = c - line_start + 1; // +1 to start from 1 
+            t.location.x = c - line_start + 1; // +1 to start from 1
             t.location.y = lines_total;
             i32 token_new_lines = 0;
             #define NEWLINE() do { c++; token_new_lines++; line_start = c; } while(0)
-            
+
             switch (*c) {
                 case ',': t.type = LEX_COMMA; c++; break;
                 case ';': t.type = LEX_END_EXP; c++; break;
@@ -353,7 +355,7 @@ void comp(buf input_file_name) {
                 case '{': case '}': case '(': case ')': case '[': case ']': t.type = LEX_SCOPE; c++; break;
                 case '*': case '+': case '-': case '%': case '!': case '~': {
                     t.type = LEX_OPERATION;
-                    c++; 
+                    c++;
                     if (*c == '=') c++;  // +=, -=, != except >=, <= which handled below
                 } break;
                 // =, ==, &, &&, |, ||, >, <, >=, <=, <<, >> handle with pairs, no <<=, >>= because I never use those
@@ -405,19 +407,19 @@ void comp(buf input_file_name) {
                         break;
                     }
                     lex_error = str(&scratch, "unknown char [%c]", *c);
-                    c++; 
+                    c++;
                 } break;
             }
-            
+
             lines_total += token_new_lines;
-            
+
             t.src.size = c - t.src.data;
             t.new_lines = token_new_lines;
-            
+
             all_tokens[all_tokens_size] = t;
             push_next(&glob, all_tokens, sizeof(lex_token));
             all_tokens_size++;
-            
+
             if (debug_print_lexing) {
                 if (t.src.data[0] == '\r') printf("[%c]\\r", t.type);
                 else printf("[%c]%.*s", t.type, SS(t.src));
@@ -444,9 +446,8 @@ void comp(buf input_file_name) {
     // todo: out of order wait list?
 
     // def list - functions and structs/enums
-    // todo: do a proper grow without MAX_DEF
-    AST *function_start = 0; // main func for now (always at start of all_ast??)
-    
+    AST *function_start = 0; // main func for now (always at start of all_ast??) // unused?
+
     // baking memory for ast list
     AST* all_ast = 0;
     u32 all_ast_count = 0;
@@ -456,21 +457,22 @@ void comp(buf input_file_name) {
     //// step 2. convert lex tokens into AST
     if (do_parsing) {
         // todo: just use arena and grow, need arena pool tho first
+        // todo: use arena with constant element size??
         #define MAX_SCOPE 128
         scope_t scope_stack[MAX_SCOPE] = { SCOPE_FILE, SCOPE_NONE }; // init first scope with FILE
         int scope_i = 0;
-        
+
         #define PUSH_SCOPE(TYPE) do { printf("(begin scope (%d) #%d)", TYPE, scope_i + 1); ASSERT(scope_i >= 0 && scope_i < MAX_SCOPE - 1); scope_i++; scope_stack[scope_i] = TYPE; } while(0)
         #define POP_SCOPE() do { printf("(end scope (%d) #%d)", scope_stack[scope_i], scope_i); ASSERT(scope_i > 0); scope_stack[scope_i] = SCOPE_NONE; scope_i--; } while (0)
 
         all_ast = (AST*)push_start(&glob);
         defer { push_end(&glob, all_ast); };
-        
+
         #define PUSH_AST(A) do { all_ast[all_ast_count] = (A); push_next(&glob, all_ast, sizeof(AST)); all_ast_count++;\
                                  if (debug_print_parsing) printf("A[%c]", (A).type); } while (0)
 
         lex_token *t = all_tokens;
-    
+
         // todo: make into a proper functions not a macro?
         #define SKIP_UNTIL(TYPE) do { while (t->type != TYPE && t->type != 0) t++; } while (0)
         // next without (ignoring separator usually)
@@ -521,7 +523,7 @@ void comp(buf input_file_name) {
         while (t < zt) {
             printf(".");
             // todo: operator "." support, how will it look like with parsing from below?
-            
+
             if (scope_stack[scope_i] == SCOPE_EXPR) { // we need to produce at least one AST elem ent
                 // todo: paranthesis support
                 // handle names or stuff
@@ -555,7 +557,7 @@ void comp(buf input_file_name) {
                 CONSUME_EXPR_END(peek);
                 POP_SCOPE();
             }
-            
+
             if (t->type == LEX_NAME) { // left hand identifier - name of function/variable when initializing/assigning to
                 lex_token* t_at_name = t;
                 if (eq("main", t->src) && scope_stack[scope_i] == SCOPE_FILE) {
@@ -583,20 +585,20 @@ void comp(buf input_file_name) {
                             } else if (num_params > 0 && t->type == LEX_COMMA) {
                                 NEXT(t); // consume comma
                             }
-                            
+
                             if (t->type != LEX_NAME) ERR("expected [%c] but [%c] given", LEX_NAME, t->type);
                             // LEX_NAME consumed
-                            
+
                             AST param = {AST_VAR_INIT};
                             param.is_function_param = true;
                             param.start_t = t;
                             printf("(function parameter \"%.*s\")", SS(t->src));
-                            
+
                             CONSUME(LEX_DEFINITION);
                             CONSUME(LEX_NAME); /* type name */
                             type_desc* found_type_desc = 0;
                             PARSE_VAR_TYPE(found_type_desc);
-                            
+
                             param.var_type = found_type_desc;
                             param.scope_type = SCOPE_FUNC; //scope_stack[scope_i];
                             param.end_t = t;
@@ -619,13 +621,14 @@ void comp(buf input_file_name) {
                         var.scope_type = scope_stack[scope_i];
                         var.is_function_param = false;
                         var.right = 0;
-                        
+
                         lex_token* peek = t;
                         NEXT(peek);
                         if (CMP(peek, LEX_OPERATION, "=")) {
                             CONSUME_E(LEX_OPERATION, "="); // consume with 't'
                             PUSH_SCOPE(SCOPE_EXPR);
-                            var.right = all_ast + all_ast_count; //... parse expression in next iteration, we need to check it's non zero tho (guarantee SCOPE_EXPR covers at least 1 AST)
+                            // todo: this is bad with PUSH_AST(var); few lines below
+                            var.right = all_ast + all_ast_count + 1 /* adjusted for PUSH below */; //... parse expression in next iteration, we need to check it's non zero tho (guarantee SCOPE_EXPR covers at least 1 AST)
                         } else {
                             CONSUME_EXPR_END(peek); // WIP doesn't do anything
                         }
@@ -651,7 +654,7 @@ void comp(buf input_file_name) {
                     op_assign.op_type = OP_ASSIGN;
                     op_assign.right = all_ast + all_ast_count; // .. prase expr in next iteration
                     PUSH_SCOPE(SCOPE_EXPR);
-                    
+
                     PUSH_AST(op_assign);
                 } else ERR("incorrect usage after using identifier name, [%c] given", t->type);
             } else if (CMP(t, LEX_SCOPE, "}")) {
@@ -660,7 +663,7 @@ void comp(buf input_file_name) {
                 printf("(ignored)");
                 // do we dissalow random tokens, needs to be a valid expression?
             }
-                
+
 parsing_footer:
             if (debug_print_parsing) {
                 printf("%c", t->type);
@@ -684,64 +687,108 @@ parsing_footer:
         do_bytecode = true;
     }
     printf("all ast size %d\n", all_ast_count);
-    // todo: typecheck? when? (should be step 3?) 
+    // todo: typecheck? when? (should be step 3?)
     // todo: optimization steps/passes?
 
+    // todo: consider Registers being a value and an address, and every specific operation has an implicit store if needed?
     enum bk_t : u8 {
         BK_NOP,
-        BK_PUSH, // it's just push stack?
-            // bk_push_flag_t
+        // copy immidiate addr to register (32 bytes)
+        BK_R1_IMM,
+        BK_R2_IMM,
+        BK_R3_IMM,
+        // copy addr from stack pointer with offset (32 bytes)
+        BK_R1_SP,
+        BK_R2_SP,
+        BK_R3_SP,
+
+        BK_PUSH, // push to stack
         // BK_POP // pop stack
         BK_COPY,
         // BK_COPY_IMM??
         BK_MUL,
         //BK_DBG_INFO,
     };
-    enum bk_push_flag_t : u8 {
-        BK_PUSH_FLAG_UNINIT,
-        BK_PUSH_FLAG_ZERO,
-    };
 
-    /* WIP thoughts: should we introduce registers? since if we will operate on addr only, we would have no control over
-       stackable addresses and such? or do we go all in with no recursion and allocate addresses for everything statically?
-    */
+    #pragma pack(push, 1)
     struct bk {
         bk_t type;
-        // ...padding, some debug info - like pointer to embeded src stuff... 
+        u8 _padding1, _padding2, _padding3;  
+        // ...padding, some debug info maybe? - like pointer to embeded src stuff...
         // ... or maybe do BK_DBG which will contain more stuff, like src range and can be applied sparcefully...
         // or due to padding I can leave some generic flag1, mode1 or something tha can be used for every/some operations?
-        union {
+
+        union { // some immediate parameters
             struct {
-                u32 size; // 4GB max...
-                bk_push_flag_t mem_flag;
+                // u8 mode; // high/low parts, but in fact we can just have u48 addr...
+                u32 addr;
+            } RN_IMM;
+            struct {
+                u32 offset; // amount of bytes from current stack pointer to decrement?
+            } RN_SP;
+            struct {
+                // stack pointer - R0
+                // pushing src - R1
+                u32 size; // but is there any actual benefit in having size or can we just operate on modes... 
             } PUSH;
             struct {
-                // using addr here is probably not the way since most of the time we will have no idea what the addr of the local var on compile time (unless static everything)
-                u32 dst_addr; // 4GB va...
-                u32 src_addr;
+                // dst - R1
+                // src - R2
                 u32 size;
             } COPY;
             struct {
-                u32 op1_addr;
-                u32 op2_addr;
-                u32 res_addr;
+                // op1 - R1
+                // op2 - R2
+                // res - R3 // todo: make the res to be op1 explicitly for profit??
             } MUL; // todo: maybe specify operation as a enum type in BK_OP or something?
         };
     };
+    #pragma pack(pop)
 
     printf("single bk size %d\n", (int)sizeof(bk));
-    struct susc_bk_header {
+    // todo: assert bk size == 8, but I don't care for now...
+
+    /*
+    # example: i :: u32 = 2;
+    RN_IMM R1 = data_addr(2) 
+    PUSH [R0] = [R1] ; R0 -= 4, then 'i' addr is at R0
+    # i = i * 3
+    RN_SP R1 = R0 ; offset 0
+    RN_IMM R2 = data_addr(3)
+    RN_SP R3 = [R0] - 4 
+    MUL [R3] = [R1] * [R2]
+    # i = i * 2
+    RN_IMM R2 = data_addr(2)
+    MUL [R3] = [R1] * [R2]
+    */
+    
+    // tmp, use arena
+    #define MAX_DATA 256
+    u32 data_segment[MAX_DATA] = {};
+    u32 *current_data = data_segment;
+    #define PUSH_DATA(VALUE) do { ASSERT(current_data < data_segment + MAX_DATA); *current_data++ = (VALUE); } while(0)
+    PUSH_DATA(0); // reseve 0 for some reason
+
+    const u32 DATA_START = 0x100; // reserve first 255 bytes for null ref errors?
+
+    struct susc_bk_header { // remember bk.size is u32 for now, so no >4GB bk files for now :(
         u32 version = 1;
-        char info[64] = "wip sus bk";
-        // note: bk and data should be in continuous block... (or it will be annoying for stuff in operations specifying addr separately for 2 of those...
-        u32 bk_offset;
-        u32 bk_size;
-        u32 data_offset;
+        char info[64] = "wip susc bk";
+        // note: bk and data should be in continuous block...? (or it will be annoying for stuff in operations specifying addr separately for 2 of those...
+        u32 data_offset = DATA_START;
         u32 data_size;
+        u32 bk_offset = DATA_START + sizeof(data_segment);
+        u32 bk_size;
         //---
         u32 debug_src_offset;
         u32 debug_src_size;
-    };
+    } bk_header = {};
+
+    bk *all_bk = 0;
+    u32 all_bk_count = 0;
+
+    buf bk_error = {};
+    #define BK_ERR(...) do { bk_error = str(&scratch, __VA_ARGS__); goto bk_footer; } while(0)
 
     //// step 3. AST to bytecode
     if (do_bytecode) {
@@ -751,16 +798,36 @@ parsing_footer:
             printf("[%c](%.*s)\n", all_ast[i].type, src_size, src);
         }
 
+        all_bk = (bk*)push_start(&glob);
+        defer { push_end(&glob, all_bk); };
+        #define PUSH_BK(BK) do { all_bk[all_bk_count] = (BK); push_next(&glob, all_bk, sizeof(bk)); all_bk_count++;\
+            if (debug_print_bytecode) printf("BK[%d]", (BK).type); } while (0)
+
         AST* za = all_ast + all_ast_count;
         AST* a = all_ast;
         while (a < za) {
             if (debug_print_bytecode) printf(".");
 
+            // todo: on function entry - reset stack pointer offset counters and other stuff..
             switch (a->type) {
                 case AST_NONE: ASSERT(0 && "uninitialized AST"); break;
                 case AST_VAR_INIT: {
-                    // BK_PUSH zeroed
                     // need to keep track var-to-addr/var-to-offset?, and it cannot be constant since this is stackable or something
+                    if (a->is_function_param || a->right == 0) {
+                        // BK_PUSH zeroed
+                        bk reg = { BK_R1_IMM };
+                        reg.RN_IMM.addr = DATA_START + 0; // data addr of value set to 0 (todo: do better bytecode lol) 
+                        PUSH_BK(reg);
+                        bk push = { BK_PUSH };
+                        push.PUSH.size = sizeof(u32);
+                        PUSH_BK(push);
+                    } else if (a->right && a->right->type == AST_VAR && a->right->is_constant) {
+                        // parse value to u32 -> add to data section -> push bk
+                        printf("(WIP)");
+                    } else {
+                        // if a->right->type == AST_OPERATION ...
+                        BK_ERR("not supported combination");
+                    }
                 } break;
                 case AST_VAR: {
                     // if constant - append to data section
@@ -775,9 +842,17 @@ parsing_footer:
                 case AST_EXPRESSION: break; // unused, WIP
                 default: ASSERT(0 && "you forgor");
             }
+bk_footer:
+            if (bk_error.size != 0) {
+                printf("\nbytecode processing error at %d:%d: %.*s\n", a->start_t->location.y, a->start_t->location.x, SS(bk_error));
+                break;
+            }
 
             a++;
         }
+
+        bk_header.data_size = (current_data - data_segment) * sizeof(u32);
+        printf("\nresulting data size %d\n", bk_header.data_size);
     }
 }
 
